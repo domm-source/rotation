@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "rotation-dev",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["/Users/dom/Desktop/Dom's Gym/serve.py"],
+      "port": 8743
+    }
+  ]
+}
