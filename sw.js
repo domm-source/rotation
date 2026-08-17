@@ -1,4 +1,4 @@
-const CACHE = 'rotation-v1';
+const CACHE = 'rotation-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -24,14 +24,11 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   event.respondWith(
-    caches.match(event.request).then(cached => {
-      const fetchPromise = fetch(event.request)
-        .then(networkResponse => {
-          caches.open(CACHE).then(cache => cache.put(event.request, networkResponse.clone()));
-          return networkResponse;
-        })
-        .catch(() => cached);
-      return cached || fetchPromise;
-    })
+    fetch(event.request)
+      .then(networkResponse => {
+        caches.open(CACHE).then(cache => cache.put(event.request, networkResponse.clone()));
+        return networkResponse;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
