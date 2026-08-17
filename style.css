@@ -227,7 +227,7 @@ h2.section-label:first-child { margin-top: 4px; }
 }
 .empty-state .btn { margin-top: 16px; }
 
-/* ---------- checklist (start session: select) ---------- */
+/* ---------- checklist (add exercise to session) ---------- */
 
 .check-row {
   display: flex;
@@ -241,19 +241,17 @@ h2.section-label:first-child { margin-top: 4px; }
 }
 .check-row:active { background: var(--surface-sunken); }
 
-.checkbox {
+.add-icon {
   width: 21px;
   height: 21px;
   border-radius: 50%;
-  border: 1.5px solid var(--text-faint);
+  border: 1.5px solid var(--accent);
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.checkbox svg { width: 12px; height: 12px; opacity: 0; stroke: var(--accent-text); }
-.check-row.checked .checkbox { background: var(--accent); border-color: var(--accent); }
-.check-row.checked .checkbox svg { opacity: 1; }
+.add-icon svg { width: 11px; height: 11px; stroke: var(--accent); }
 
 .check-row-body { flex: 1; }
 .check-row-name { font-size: 15px; font-weight: 600; }
@@ -278,6 +276,7 @@ h2.section-label:first-child { margin-top: 4px; }
 }
 
 .log-card-header { margin-bottom: 12px; }
+.log-card-header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .log-card-name { font-size: 16px; font-weight: 700; }
 .log-card-last { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; }
 

@@ -236,6 +236,16 @@ function newDraft() {
   return { selected: new Set(), logs: {} };
 }
 
+function startOrResumeSession() {
+  if (!draft) {
+    draft = newDraft();
+    const ranked = rankedExercises(true);
+    const suggestCount = Math.min(5, ranked.length);
+    ranked.slice(0, suggestCount).forEach(r => draft.selected.add(r.exercise.id));
+  }
+  goTo('session');
+}
+
 /* =================================================================
    Rendering
 ================================================================= */
@@ -253,12 +263,12 @@ function esc(str) {
 
 function render() {
   const view = nav.view;
-  const isSub = ['exerciseDetail', 'startLog', 'historyDetail'].includes(view);
+  const isSub = ['exerciseDetail', 'session', 'sessionAdd', 'historyDetail'].includes(view);
   topbarBack.hidden = !isSub;
 
   tabbar.querySelectorAll('.tab').forEach(btn => {
     const tabView = btn.dataset.view;
-    const active = tabView === view || (tabView === 'startSelect' && view === 'startLog');
+    const active = tabView === view || (tabView === 'session' && view === 'sessionAdd');
     btn.classList.toggle('active', active);
   });
 
@@ -267,8 +277,8 @@ function render() {
 
   switch (view) {
     case 'home': title = 'Rotation'; html = renderHome(); break;
-    case 'startSelect': title = 'Start Session'; html = renderStartSelect(); break;
-    case 'startLog': title = 'Log Session'; html = renderStartLog(); break;
+    case 'session': title = 'Log Session'; html = renderSession(); break;
+    case 'sessionAdd': title = 'Add Exercise'; html = renderSessionAdd(); break;
     case 'history': title = 'History'; html = renderHistory(); break;
     case 'historyDetail': title = formatDateLong(nav.params.date); html = renderHistoryDetail(); break;
     case 'settings': title = 'Settings'; html = renderSettings(); break;
@@ -319,52 +329,48 @@ function renderHome() {
   `;
 }
 
-/* ---------------- Start: select exercises ---------------- */
+/* ---------------- Session: add exercise picker ---------------- */
 
-function renderStartSelect() {
+function renderSessionAdd() {
   if (!draft) draft = newDraft();
-  const ranked = rankedExercises(true);
+  const ranked = rankedExercises(true).filter(r => !draft.selected.has(r.exercise.id));
+
+  const footer = `
+    <div class="sticky-footer">
+      <button class="btn btn-primary" id="sessionAddDoneBtn">Back to Session</button>
+    </div>`;
 
   if (ranked.length === 0) {
-    return `<div class="empty-state">No exercises yet. Add some in Settings first.</div>`;
+    return `<div class="empty-state">All your exercises are already in this session.</div>${footer}`;
   }
 
-  if (draft.selected.size === 0) {
-    const suggestCount = Math.min(5, ranked.length);
-    ranked.slice(0, suggestCount).forEach(r => draft.selected.add(r.exercise.id));
-  }
-
-  const rows = ranked.map(r => {
-    const checked = draft.selected.has(r.exercise.id);
-    return `
-      <button class="check-row ${checked ? 'checked' : ''}" data-toggle="${r.exercise.id}">
-        <span class="checkbox"><svg viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></span>
-        <span class="check-row-body">
-          <div class="check-row-name">${esc(r.exercise.name)}</div>
-          <div class="check-row-meta">${formatRelative(r.daysSince)}</div>
-        </span>
-      </button>`;
-  }).join('');
+  const rows = ranked.map(r => `
+    <button class="check-row" data-quickadd="${r.exercise.id}">
+      <span class="add-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+      <span class="check-row-body">
+        <div class="check-row-name">${esc(r.exercise.name)}</div>
+        <div class="check-row-meta">${formatRelative(r.daysSince)}</div>
+      </span>
+    </button>`).join('');
 
   return `
-    <p class="onboarding-note">Pre-selected: the exercises you're most overdue on. Adjust as you like, then continue.</p>
     <div class="list">${rows}</div>
-    <div class="sticky-footer">
-      <button class="btn btn-primary" id="continueLogBtn" ${draft.selected.size === 0 ? 'disabled' : ''}>
-        Continue — ${draft.selected.size} selected
-      </button>
-    </div>
+    ${footer}
   `;
 }
 
-/* ---------------- Start: log sets ---------------- */
+/* ---------------- Session: log sets ---------------- */
 
-function renderStartLog() {
-  if (!draft || draft.selected.size === 0) {
-    return `<div class="empty-state">Nothing selected. <br><button class="btn btn-secondary" id="backToSelectBtn" style="margin-top:12px;width:auto;padding:10px 18px;">Choose exercises</button></div>`;
+function renderSession() {
+  if (!draft) draft = newDraft();
+
+  if (state.exercises.filter(e => e.active).length === 0) {
+    return `<div class="empty-state">No exercises yet. Add some in Settings first.</div>`;
   }
 
   const ids = [...draft.selected];
+  const empty = ids.length === 0;
+
   const cards = ids.map(id => {
     const ex = state.exercises.find(e => e.id === id);
     if (!ex) return '';
@@ -403,7 +409,10 @@ function renderStartLog() {
     return `
       <div class="log-card">
         <div class="log-card-header">
-          <div class="log-card-name">${esc(ex.name)}</div>
+          <div class="log-card-header-top">
+            <div class="log-card-name">${esc(ex.name)}</div>
+            <button class="row-btn remove" data-remove-exercise-session="${id}" aria-label="Remove ${esc(ex.name)} from session"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0v12a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V7"/></svg></button>
+          </div>
           <div class="log-card-last">${esc(lastLine)}</div>
         </div>
         ${setRows}
@@ -413,9 +422,10 @@ function renderStartLog() {
   }).join('');
 
   return `
-    ${cards}
+    ${empty ? `<div class="empty-state">No exercises added yet.<br>Tap below to add one.</div>` : cards}
+    <button class="btn btn-secondary" id="addExerciseSessionBtn" style="margin-bottom:8px;">+ Add exercise</button>
     <div class="sticky-footer">
-      <button class="btn btn-primary" id="finishSessionBtn">Finish Session</button>
+      <button class="btn btn-primary" id="finishSessionBtn" ${empty ? 'disabled' : ''}>Finish Session</button>
     </div>
   `;
 }
@@ -547,7 +557,7 @@ function renderSettings() {
 function attachViewHandlers(view) {
   if (view === 'home') {
     const startBtn = document.getElementById('startSessionBtn');
-    if (startBtn) startBtn.onclick = () => { draft = newDraft(); goTo('startSelect'); };
+    if (startBtn) startBtn.onclick = () => startOrResumeSession();
     const goSettingsBtn = document.getElementById('goSettingsBtn');
     if (goSettingsBtn) goSettingsBtn.onclick = () => goTo('settings');
     viewRoot.querySelectorAll('[data-exdetail]').forEach(btn => {
@@ -558,22 +568,18 @@ function attachViewHandlers(view) {
     });
   }
 
-  if (view === 'startSelect') {
-    viewRoot.querySelectorAll('[data-toggle]').forEach(btn => {
+  if (view === 'sessionAdd') {
+    viewRoot.querySelectorAll('[data-quickadd]').forEach(btn => {
       btn.onclick = () => {
-        const id = btn.dataset.toggle;
-        if (draft.selected.has(id)) draft.selected.delete(id); else draft.selected.add(id);
+        draft.selected.add(btn.dataset.quickadd);
         render();
       };
     });
-    const cont = document.getElementById('continueLogBtn');
-    if (cont) cont.onclick = () => goTo('startLog');
+    const doneBtn = document.getElementById('sessionAddDoneBtn');
+    if (doneBtn) doneBtn.onclick = () => goTo('session');
   }
 
-  if (view === 'startLog') {
-    const backBtn = document.getElementById('backToSelectBtn');
-    if (backBtn) backBtn.onclick = () => goTo('startSelect');
-
+  if (view === 'session') {
     viewRoot.querySelectorAll('[data-set-field]').forEach(input => {
       input.oninput = () => {
         const [id, idx, field] = input.dataset.setField.split(':');
@@ -603,6 +609,22 @@ function attachViewHandlers(view) {
         render();
       };
     });
+    viewRoot.querySelectorAll('[data-remove-exercise-session]').forEach(btn => {
+      btn.onclick = () => {
+        const id = btn.dataset.removeExerciseSession;
+        const log = draft.logs[id];
+        const hasData = log && (log.feeling || (log.sets || []).some(s => s.reps !== '' || s.weight !== ''));
+        if (hasData) {
+          const ex = state.exercises.find(e => e.id === id);
+          if (!confirm(`Remove "${ex ? ex.name : 'this exercise'}" from today's session? Any sets you've logged for it will be discarded.`)) return;
+        }
+        draft.selected.delete(id);
+        delete draft.logs[id];
+        render();
+      };
+    });
+    const addExerciseSessionBtn = document.getElementById('addExerciseSessionBtn');
+    if (addExerciseSessionBtn) addExerciseSessionBtn.onclick = () => goTo('sessionAdd');
     const finishBtn = document.getElementById('finishSessionBtn');
     if (finishBtn) finishBtn.onclick = finishSession;
   }
@@ -682,6 +704,7 @@ function attachViewHandlers(view) {
 }
 
 function finishSession() {
+  if (!draft || draft.selected.size === 0) return;
   const entries = [];
   for (const id of draft.selected) {
     const log = draft.logs[id];
@@ -711,7 +734,7 @@ function finishSession() {
 ================================================================= */
 
 document.getElementById('topbarBack').onclick = () => {
-  if (nav.view === 'startLog') goTo('startSelect');
+  if (nav.view === 'sessionAdd') goTo('session');
   else if (nav.view === 'exerciseDetail') goTo('home');
   else if (nav.view === 'historyDetail') goTo('history');
   else goTo('home');
@@ -720,7 +743,7 @@ document.getElementById('topbarBack').onclick = () => {
 tabbar.querySelectorAll('.tab').forEach(btn => {
   btn.onclick = () => {
     const view = btn.dataset.view;
-    if (view === 'startSelect') draft = draft || newDraft();
+    if (view === 'session') { startOrResumeSession(); return; }
     goTo(view);
   };
 });
