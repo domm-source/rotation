@@ -428,6 +428,8 @@ h2.section-label:first-child { margin-top: 4px; }
 }
 .add-exercise-form input:focus { border-color: var(--accent); }
 
+.btn-stack { display: flex; flex-direction: column; gap: 8px; }
+
 .segmented {
   display: flex;
   border: 1px solid var(--border);

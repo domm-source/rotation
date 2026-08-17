@@ -61,6 +61,11 @@ function formatDateLong(iso) {
   return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+function formatDateFull(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+}
+
 /* =================================================================
    Rotation logic
 ================================================================= */
@@ -103,6 +108,108 @@ function setsSummary(sets) {
     const weight = s.weight !== '' && s.weight != null ? `${s.weight}${state.settings.unit}` : '';
     return weight ? `${reps}×${weight}` : `${reps} reps`;
   }).join(', ');
+}
+
+/* =================================================================
+   Export / import
+================================================================= */
+
+function buildJSONExport() {
+  const payload = {
+    app: 'rotation',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    data: state,
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
+function buildTextExport() {
+  const lines = [];
+  lines.push('ROTATION — WORKOUT LOG');
+  lines.push(`Exported ${formatDateFull(todayISO())}`);
+  lines.push('');
+
+  const sessions = [...state.sessions].sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt);
+
+  if (sessions.length === 0) {
+    lines.push('No sessions logged yet.');
+    return lines.join('\n');
+  }
+
+  for (const session of sessions) {
+    const header = formatDateFull(session.date);
+    lines.push('='.repeat(header.length));
+    lines.push(header);
+    lines.push('='.repeat(header.length));
+    lines.push('');
+    for (const entry of session.entries) {
+      const ex = state.exercises.find(x => x.id === entry.exerciseId);
+      lines.push(ex ? ex.name : '(removed exercise)');
+      if (entry.sets && entry.sets.length) {
+        entry.sets.forEach(s => {
+          const reps = s.reps != null ? `${s.reps} reps` : 'reps not logged';
+          const weight = s.weight != null ? ` @ ${s.weight}${state.settings.unit}` : '';
+          lines.push(`  ${reps}${weight}`);
+        });
+      } else {
+        lines.push('  (no sets logged)');
+      }
+      if (entry.feeling) {
+        const f = feelingById(entry.feeling);
+        lines.push(`  Feeling: ${f.label} ${f.emoji}`);
+      }
+      lines.push('');
+    }
+  }
+
+  return lines.join('\n').trim() + '\n';
+}
+
+function exportFile(filename, mimeType, content) {
+  const blob = new Blob([content], { type: mimeType });
+  if (navigator.canShare) {
+    try {
+      const file = new File([blob], filename, { type: mimeType });
+      if (navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file] }).catch(() => {});
+        return;
+      }
+    } catch (e) { /* fall through to direct download */ }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function importBackup(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(reader.result);
+    } catch (e) {
+      alert("That file isn't valid JSON — couldn't read it as a Rotation backup.");
+      return;
+    }
+    const data = parsed && parsed.app === 'rotation' ? parsed.data : null;
+    if (!data || !Array.isArray(data.exercises) || !Array.isArray(data.sessions)) {
+      alert("That doesn't look like a Rotation backup file.");
+      return;
+    }
+    const current = `${state.exercises.length} exercises, ${state.sessions.length} sessions`;
+    const incoming = `${data.exercises.length} exercises, ${data.sessions.length} sessions`;
+    if (!confirm(`Replace your current data (${current}) with this backup (${incoming})? This can't be undone.`)) return;
+    state = { exercises: data.exercises, sessions: data.sessions, settings: data.settings || { unit: 'kg' } };
+    saveState();
+    goTo('settings');
+  };
+  reader.readAsText(file);
 }
 
 /* =================================================================
@@ -405,6 +512,8 @@ function renderSettings() {
     ? `<p class="onboarding-note">Add the exercises you rotate through — around 15 is typical. You can edit this list any time.</p>`
     : '';
 
+  const counts = `${activeExercises.length} active exercise${activeExercises.length === 1 ? '' : 's'} · ${state.sessions.length} session${state.sessions.length === 1 ? '' : 's'} logged`;
+
   return `
     <h2 class="section-label">Units</h2>
     <div class="segmented">
@@ -419,6 +528,15 @@ function renderSettings() {
       <input type="text" id="newExerciseInput" placeholder="Add exercise…" autocomplete="off">
       <button class="btn btn-primary btn-small" type="submit">Add</button>
     </form>
+
+    <h2 class="section-label">Data</h2>
+    <p class="onboarding-note">${esc(counts)}. Everything is stored only on this device — export a backup to keep it safe, or a text log to share with a coach.</p>
+    <div class="btn-stack">
+      <button class="btn btn-secondary" id="exportJsonBtn">Export backup (.json)</button>
+      <button class="btn btn-secondary" id="exportTextBtn">Export for coach (.txt)</button>
+      <button class="btn btn-secondary" id="importBtn">Restore from backup…</button>
+    </div>
+    <input type="file" id="importFileInput" accept="application/json,.json" hidden>
   `;
 }
 
@@ -541,6 +659,25 @@ function attachViewHandlers(view) {
       render();
       document.getElementById('newExerciseInput').focus();
     };
+
+    const exportJsonBtn = document.getElementById('exportJsonBtn');
+    if (exportJsonBtn) exportJsonBtn.onclick = () => {
+      exportFile(`rotation-backup-${todayISO()}.json`, 'application/json', buildJSONExport());
+    };
+    const exportTextBtn = document.getElementById('exportTextBtn');
+    if (exportTextBtn) exportTextBtn.onclick = () => {
+      exportFile(`rotation-log-${todayISO()}.txt`, 'text/plain', buildTextExport());
+    };
+    const importBtn = document.getElementById('importBtn');
+    const importFileInput = document.getElementById('importFileInput');
+    if (importBtn && importFileInput) {
+      importBtn.onclick = () => importFileInput.click();
+      importFileInput.onchange = () => {
+        const file = importFileInput.files[0];
+        if (file) importBackup(file);
+        importFileInput.value = '';
+      };
+    }
   }
 }
 
