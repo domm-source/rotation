@@ -74,8 +74,9 @@ function sessionsDesc() {
   return [...state.sessions].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
 }
 
-function lastEntryFor(exerciseId) {
+function lastEntryFor(exerciseId, excludeSessionId = null) {
   for (const session of sessionsDesc()) {
+    if (session.id === excludeSessionId) continue;
     const entry = session.entries.find(e => e.exerciseId === exerciseId);
     if (entry) return { session, entry };
   }
@@ -207,6 +208,8 @@ function importBackup(file) {
     if (!confirm(`Replace your current data (${current}) with this backup (${incoming})? This can't be undone.`)) return;
     state = { exercises: data.exercises, sessions: data.sessions, settings: data.settings || { unit: 'kg' } };
     saveState();
+    draft = null;
+    saveDraft();
     goTo('settings');
   };
   reader.readAsText(file);
@@ -229,19 +232,84 @@ function goTo(view, params = {}) {
   if (root) root.scrollTop = 0;
 }
 
-/* transient draft session (not persisted until Finish) */
-let draft = null;
+/* In-progress session. Autosaved: every change is written to DRAFT_KEY (so the
+   screen survives closing the app) and the touched exercises are upserted into
+   state.sessions (so history and rotation are always current). A draft that has
+   been idle for DRAFT_IDLE_MS counts as a finished session. */
+const DRAFT_KEY = 'rotation.draft.v1';
+const DRAFT_IDLE_MS = 4 * 60 * 60 * 1000;
+
+function loadDraft() {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (Date.now() - saved.updatedAt > DRAFT_IDLE_MS) return null;
+    return { ...saved, selected: new Set(saved.selected) };
+  } catch (e) { console.error('Failed to load draft', e); }
+  return null;
+}
+
+function saveDraft() {
+  if (!draft) { localStorage.removeItem(DRAFT_KEY); return; }
+  localStorage.setItem(DRAFT_KEY, JSON.stringify({ ...draft, selected: [...draft.selected] }));
+}
+
+let draft = loadDraft();
+
+function activeDraft() {
+  if (draft && Date.now() - draft.updatedAt > DRAFT_IDLE_MS) { draft = null; saveDraft(); }
+  return draft;
+}
 
 function newDraft() {
-  return { selected: new Set(), logs: {} };
+  return { selected: new Set(), logs: {}, sessionId: null, date: todayISO(), startedAt: Date.now(), updatedAt: Date.now() };
+}
+
+/* an exercise counts as done once it has reps or a feeling logged */
+function draftEntries() {
+  const entries = [];
+  for (const id of draft.selected) {
+    const log = draft.logs[id];
+    if (!log) continue;
+    const touched = log.feeling || log.sets.some(s => s.reps !== '' && s.reps != null);
+    if (!touched) continue;
+    const sets = log.sets
+      .filter(s => (s.reps !== '' && s.reps != null) || (s.weight !== '' && s.weight != null))
+      .map(s => ({
+        reps: s.reps === '' ? null : Number(s.reps),
+        weight: s.weight === '' ? null : Number(s.weight),
+      }));
+    entries.push({ exerciseId: id, sets, feeling: log.feeling });
+  }
+  return entries;
+}
+
+function syncDraft() {
+  if (!draft) return;
+  draft.updatedAt = Date.now();
+  const entries = draftEntries();
+  const idx = draft.sessionId ? state.sessions.findIndex(s => s.id === draft.sessionId) : -1;
+  if (entries.length === 0) {
+    if (idx !== -1) state.sessions.splice(idx, 1);
+    draft.sessionId = null;
+  } else if (idx === -1) {
+    draft.sessionId = draft.sessionId || uid();
+    state.sessions.push({ id: draft.sessionId, date: draft.date, createdAt: draft.startedAt, entries });
+  } else {
+    state.sessions[idx].entries = entries;
+  }
+  saveState();
+  saveDraft();
 }
 
 function startOrResumeSession() {
-  if (!draft) {
+  if (!activeDraft()) {
     draft = newDraft();
     const ranked = rankedExercises(true);
     const suggestCount = Math.min(5, ranked.length);
     ranked.slice(0, suggestCount).forEach(r => draft.selected.add(r.exercise.id));
+    saveDraft();
   }
   goTo('session');
 }
@@ -323,7 +391,7 @@ function renderHome() {
 
   return `
     <div class="date-sub">${today}</div>
-    <button class="btn btn-primary" id="startSessionBtn">Start Session</button>
+    <button class="btn btn-primary" id="startSessionBtn">${activeDraft() ? 'Resume Session' : 'Start Session'}</button>
     <h2 class="section-label">Rotation — most overdue first</h2>
     <div class="list">${rows}</div>
   `;
@@ -374,14 +442,14 @@ function renderSession() {
   const cards = ids.map(id => {
     const ex = state.exercises.find(e => e.id === id);
     if (!ex) return '';
+    const last = lastEntryFor(id, draft.sessionId);
     if (!draft.logs[id]) {
-      const last = lastEntryFor(id);
       const lastWeight = last && last.entry.sets && last.entry.sets.length
         ? last.entry.sets[last.entry.sets.length - 1].weight : '';
       draft.logs[id] = { sets: [{ reps: '', weight: lastWeight ?? '' }], feeling: null };
     }
     const log = draft.logs[id];
-    const last = lastEntryFor(id);
+    const done = !!log.feeling;
     const lastLine = last
       ? `Last: ${formatRelative(daysBetween(last.session.date, todayISO()))} · ${setsSummary(last.entry.sets) || 'no sets logged'}${last.entry.feeling ? ' · ' + feelingById(last.entry.feeling).emoji : ''}`
       : 'First time logging this one';
@@ -407,13 +475,16 @@ function renderSession() {
       </button>`).join('');
 
     return `
-      <div class="log-card">
+      <div class="log-card ${done ? 'done' : ''}">
         <div class="log-card-header">
           <div class="log-card-header-top">
-            <div class="log-card-name">${esc(ex.name)}</div>
+            <span class="done-mark ${done ? 'on' : ''}" role="img" aria-label="${done ? 'Complete' : 'Not complete yet — pick how it felt'}"><svg viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></span>
+            <div class="log-card-title">
+              <div class="log-card-name">${esc(ex.name)}</div>
+              <div class="log-card-last">${esc(lastLine)}</div>
+            </div>
             <button class="row-btn remove" data-remove-exercise-session="${id}" aria-label="Remove ${esc(ex.name)} from session"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0v12a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V7"/></svg></button>
           </div>
-          <div class="log-card-last">${esc(lastLine)}</div>
         </div>
         ${setRows}
         <button class="add-set-btn" data-add-set="${id}">+ Add set</button>
@@ -421,12 +492,13 @@ function renderSession() {
       </div>`;
   }).join('');
 
+  const doneCount = ids.filter(id => draft.logs[id] && draft.logs[id].feeling).length;
+  const progress = empty ? '' : `<h2 class="section-label">${doneCount} of ${ids.length} complete · saved as you go</h2>`;
+
   return `
+    ${progress}
     ${empty ? `<div class="empty-state">No exercises added yet.<br>Tap below to add one.</div>` : cards}
-    <button class="btn btn-secondary" id="addExerciseSessionBtn" style="margin-bottom:8px;">+ Add exercise</button>
-    <div class="sticky-footer">
-      <button class="btn btn-primary" id="finishSessionBtn" ${empty ? 'disabled' : ''}>Finish Session</button>
-    </div>
+    <button class="btn btn-secondary" id="addExerciseSessionBtn">+ Add exercise</button>
   `;
 }
 
@@ -572,6 +644,7 @@ function attachViewHandlers(view) {
     viewRoot.querySelectorAll('[data-quickadd]').forEach(btn => {
       btn.onclick = () => {
         draft.selected.add(btn.dataset.quickadd);
+        syncDraft();
         render();
       };
     });
@@ -584,6 +657,7 @@ function attachViewHandlers(view) {
       input.oninput = () => {
         const [id, idx, field] = input.dataset.setField.split(':');
         draft.logs[id].sets[+idx][field] = input.value;
+        syncDraft();
       };
     });
     viewRoot.querySelectorAll('[data-add-set]').forEach(btn => {
@@ -592,6 +666,7 @@ function attachViewHandlers(view) {
         const sets = draft.logs[id].sets;
         const prev = sets[sets.length - 1];
         sets.push({ reps: prev ? prev.reps : '', weight: prev ? prev.weight : '' });
+        syncDraft();
         render();
       };
     });
@@ -599,6 +674,7 @@ function attachViewHandlers(view) {
       btn.onclick = () => {
         const [id, idx] = btn.dataset.removeSet.split(':');
         draft.logs[id].sets.splice(+idx, 1);
+        syncDraft();
         render();
       };
     });
@@ -606,6 +682,7 @@ function attachViewHandlers(view) {
       btn.onclick = () => {
         const [id, feelingId] = btn.dataset.feeling.split(':');
         draft.logs[id].feeling = draft.logs[id].feeling === feelingId ? null : feelingId;
+        syncDraft();
         render();
       };
     });
@@ -613,20 +690,19 @@ function attachViewHandlers(view) {
       btn.onclick = () => {
         const id = btn.dataset.removeExerciseSession;
         const log = draft.logs[id];
-        const hasData = log && (log.feeling || (log.sets || []).some(s => s.reps !== '' || s.weight !== ''));
+        const hasData = log && (log.feeling || log.sets.some(s => s.reps !== ''));
         if (hasData) {
           const ex = state.exercises.find(e => e.id === id);
           if (!confirm(`Remove "${ex ? ex.name : 'this exercise'}" from today's session? Any sets you've logged for it will be discarded.`)) return;
         }
         draft.selected.delete(id);
         delete draft.logs[id];
+        syncDraft();
         render();
       };
     });
     const addExerciseSessionBtn = document.getElementById('addExerciseSessionBtn');
     if (addExerciseSessionBtn) addExerciseSessionBtn.onclick = () => goTo('sessionAdd');
-    const finishBtn = document.getElementById('finishSessionBtn');
-    if (finishBtn) finishBtn.onclick = finishSession;
   }
 
   if (view === 'history') {
@@ -641,6 +717,7 @@ function attachViewHandlers(view) {
       if (!confirm('Delete this session? This cannot be undone.')) return;
       state.sessions = state.sessions.filter(s => s.id !== nav.params.id);
       saveState();
+      if (draft && draft.sessionId === nav.params.id) { draft = null; saveDraft(); }
       goTo('history');
     };
   }
@@ -701,32 +778,6 @@ function attachViewHandlers(view) {
       };
     }
   }
-}
-
-function finishSession() {
-  if (!draft || draft.selected.size === 0) return;
-  const entries = [];
-  for (const id of draft.selected) {
-    const log = draft.logs[id];
-    if (!log) { entries.push({ exerciseId: id, sets: [], feeling: null }); continue; }
-    const sets = log.sets
-      .filter(s => (s.reps !== '' && s.reps != null) || (s.weight !== '' && s.weight != null))
-      .map(s => ({
-        reps: s.reps === '' ? null : Number(s.reps),
-        weight: s.weight === '' ? null : Number(s.weight),
-      }));
-    entries.push({ exerciseId: id, sets, feeling: log.feeling });
-  }
-
-  state.sessions.push({
-    id: uid(),
-    date: todayISO(),
-    createdAt: Date.now(),
-    entries,
-  });
-  saveState();
-  draft = null;
-  goTo('home');
 }
 
 /* =================================================================
